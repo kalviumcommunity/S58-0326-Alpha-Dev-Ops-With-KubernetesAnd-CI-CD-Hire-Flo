@@ -1,0 +1,77 @@
+# ============================================================
+# HireFlow — Kubernetes Service
+# Team 02 | Sprint #3 | Assignment 4.17
+# ============================================================
+# A Service provides a stable network endpoint for pods.
+# Pods are ephemeral — they get new IPs when restarted.
+# The Service IP stays constant regardless of pod changes.
+#
+# Cloud-native principle: service discovery via DNS.
+# Other services reach HireFlow at: hireflow-service:80
+# Not by pod IP (which changes) but by service name (stable).
+# ============================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: hireflow-service
+  namespace: recruitment
+  labels:
+    app: hireflow
+    team: team-02
+spec:
+  # Routes traffic to all pods with label app: hireflow
+  # Automatically load balances across all healthy pods
+  selector:
+    app: hireflow
+
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80           # Port clients connect to
+    targetPort: 3000   # Port pods listen on
+
+  # ClusterIP: internal only (accessed via Ingress externally)
+  # Cloud-native: separate internal routing from external access
+  type: ClusterIP
+
+---
+# ============================================================
+# HireFlow — Horizontal Pod Autoscaler
+# Team 02 | Sprint #3 | Assignment 4.17
+# ============================================================
+# HPA solves HireFlow's core problem: seasonal hiring surges.
+# Campus recruitment season → CPU spikes → HPA adds pods.
+# After surge → CPU drops → HPA removes pods.
+# Fully automatic. No manual scaling needed.
+#
+# Cloud-native principle: elastic scaling based on demand.
+# ============================================================
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hireflow-hpa
+  namespace: recruitment
+  labels:
+    app: hireflow
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hireflow
+
+  # During off-peak: 2 pods (cost efficient)
+  # During surge: up to 10 pods (handles 8000+ applications/day)
+  minReplicas: 2
+  maxReplicas: 10
+
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        # Scale up when average CPU across pods hits 60%
+        # Gives headroom before performance degrades
+        averageUtilization: 60
