@@ -1,0 +1,30 @@
+# ============================================================
+# HireFlow — ConfigMap
+# Team 02 | Sprint #3 | Assignment 4.17
+# ============================================================
+# ConfigMaps externalize configuration from the Docker image.
+# This means we can change FORM_VERSION without rebuilding
+# the image — solving the form version traceability problem.
+#
+# Cloud-native principle: Config lives outside the container.
+# The same image runs in all environments with different configs.
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hireflow-config
+  namespace: recruitment
+  labels:
+    app: hireflow
+    team: team-02
+data:
+  # Form version — injected into all pods as an env var
+  # Recruiters query /api/form-version to see this value
+  FORM_VERSION: "v2.4.1"
+
+  # Application environment
+  NODE_ENV: "production"
+
+  # Port the Node.js server listens on
+  PORT: "3000"
