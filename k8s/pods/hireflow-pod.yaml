@@ -1,0 +1,82 @@
+# ============================================================
+# HireFlow — Standalone Pod Definition
+# Team 02 | Sprint #3 | Assignment 4.20
+# ============================================================
+# A Pod is the smallest deployable unit in Kubernetes.
+# It wraps one or more containers and shares:
+#   - Same network namespace (same IP address)
+#   - Same storage volumes
+#   - Same lifecycle (start and stop together)
+#
+# NOTE: Standalone pods like this are NOT used in production.
+# They have no self-healing — if this pod dies, it stays dead.
+# This is created for learning purposes only.
+# Production uses Deployments which manage pods via ReplicaSets.
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hireflow-pod
+  namespace: recruitment
+  labels:
+    app: hireflow
+    type: standalone-pod
+    assignment: "4.20"
+    team: team-02
+spec:
+  containers:
+  - name: hireflow-container
+    # Using the image we built and pushed in Assignment 4.16
+    image: abhich98/hireflow-backend:v2.4.1
+
+    # Port the container listens on
+    ports:
+    - containerPort: 3000
+      name: http
+
+    # Environment variables injected from ConfigMap
+    # This is how FORM_VERSION reaches the application
+    env:
+    - name: FORM_VERSION
+      valueFrom:
+        configMapKeyRef:
+          name: hireflow-config
+          key: FORM_VERSION
+    - name: NODE_ENV
+      value: "production"
+    - name: PORT
+      value: "3000"
+
+    # Liveness probe — restarts container if /health fails
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 10
+      periodSeconds: 30
+      failureThreshold: 3
+
+    # Readiness probe — only routes traffic when app is ready
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      failureThreshold: 3
+
+    # Resource boundaries
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "250m"
+
+  # Pod restart policy
+  # Always: restart if container exits (default for Deployments)
+  # OnFailure: only restart on non-zero exit
+  # Never: never restart (used for Jobs)
+  restartPolicy: Always
