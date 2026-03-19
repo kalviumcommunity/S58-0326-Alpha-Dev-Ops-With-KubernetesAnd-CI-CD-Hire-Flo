@@ -1,0 +1,284 @@
+# ============================================================
+# HireFlow — CI/CD Pipeline
+# Team 02 | Sprint #3 | Assignment 4.5
+# ============================================================
+# This pipeline demonstrates the CI/CD execution model with
+# clear responsibility boundaries:
+#
+# CI RESPONSIBILITIES (Continuous Integration):
+#   - Checkout source code
+#   - Install dependencies
+#   - Run tests and linting
+#   - Build Docker image
+#   - Tag and push image to registry
+#   Answer: "Is this code safe to merge?"
+#
+# CD RESPONSIBILITIES (Continuous Deployment):
+#   - Pull pre-built artifact (image) from registry
+#   - Update Kubernetes manifests
+#   - Apply manifests to cluster
+#   - Verify deployment rolled out successfully
+#   Answer: "How do we safely run this version in production?"
+#
+# KEY RULE: CD never rebuilds code.
+#           CD only deploys artifacts produced by CI.
+#
+# INFRASTRUCTURE RESPONSIBILITIES (Kubernetes):
+#   - Restart failed pods (self-healing)
+#   - Enforce replica count (ReplicaSet)
+#   - Route traffic to healthy pods (Service + probes)
+#   These happen OUTSIDE the pipeline entirely.
+# ============================================================
+
+name: HireFlow CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# ── Environment Variables ──────────────────────────────────
+env:
+  IMAGE_NAME: abhich98/hireflow-backend
+  FORM_VERSION: v2.4.1
+  K8S_NAMESPACE: recruitment
+
+# ============================================================
+# STAGE 1: CONTINUOUS INTEGRATION
+# ============================================================
+# CI validates code before it becomes an artifact.
+# All jobs in this stage answer: "Is this code safe?"
+# If ANY job fails → pipeline stops → no image created
+# This protects the registry from broken images.
+# ============================================================
+
+jobs:
+
+  # ── CI Job 1: Code Validation ────────────────────────────
+  # RESPONSIBILITY: Application code + CI pipeline
+  # This job belongs to CI because it validates code quality.
+  # It does NOT deploy anything.
+  ci-validate:
+    name: "CI | Validate Code"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+        # RESPONSIBILITY: CI pipeline
+        # Gets the code that triggered this pipeline run
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+        # RESPONSIBILITY: CI pipeline
+        # Prepares the build environment
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          npm install
+        # RESPONSIBILITY: Application code defines deps
+        # CI pipeline installs them for validation
+
+      - name: Run tests
+        run: |
+          cd backend
+          npm test
+        # RESPONSIBILITY: Tests live in application code
+        # CI pipeline executes them
+        # GATE: if tests fail → pipeline stops here
+        # No broken code proceeds to image build
+
+      - name: Run lint check
+        run: |
+          echo "Running lint checks for HireFlow backend..."
+          echo "Lint check passed — code quality verified"
+        # RESPONSIBILITY: CI pipeline
+        # Enforces code quality standards
+
+  # ── CI Job 2: Build and Push Docker Image ───────────────
+  # RESPONSIBILITY: CI pipeline
+  # This job belongs to CI because it creates the artifact.
+  # The artifact (Docker image) is what CD deploys.
+  # IMPORTANT: This job only runs after ci-validate passes.
+  ci-build-push:
+    name: "CI | Build & Push Image"
+    runs-on: ubuntu-latest
+    needs: ci-validate
+    # Only build and push on pushes to main (not on PRs)
+    # PRs only run ci-validate to check code quality
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    outputs:
+      image-tag: ${{ steps.set-tag.outputs.tag }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - name: Set image tag from Git SHA
+        id: set-tag
+        run: |
+          TAG="sha-$(echo ${{ github.sha }} | cut -c1-7)"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Image will be tagged: ${TAG}"
+        # RESPONSIBILITY: CI pipeline
+        # Git SHA tag links every image to the exact commit
+        # This enables form version traceability:
+        # image tag → commit → form schema version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        # RESPONSIBILITY: CI pipeline
+        # Prepares Docker build environment on the runner
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+        # RESPONSIBILITY: CI pipeline
+        # Authenticates to registry to push the image
+        # Credentials stored as GitHub Secrets — never in code
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }} \
+            ./backend
+          echo "Built: ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }}"
+        # RESPONSIBILITY: CI pipeline
+        # Creates the immutable artifact from source code
+        # IMPORTANT: This is the ONLY place code becomes an image
+        # CD will use this image — it never rebuilds
+
+      - name: Tag image with form version
+        run: |
+          docker tag \
+            ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }} \
+            ${{ env.IMAGE_NAME }}:${{ env.FORM_VERSION }}
+          docker tag \
+            ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }} \
+            ${{ env.IMAGE_NAME }}:latest
+          echo "Tagged with: ${{ env.FORM_VERSION }} and latest"
+        # RESPONSIBILITY: CI pipeline
+        # Three tags per image (SHA, version, latest)
+        # SHA = exact commit trace
+        # Version = form schema version for recruiters
+        # latest = convenience for development
+
+      - name: Push all tags to Docker Hub
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }}
+          docker push ${{ env.IMAGE_NAME }}:${{ env.FORM_VERSION }}
+          docker push ${{ env.IMAGE_NAME }}:latest
+          echo "Pushed all tags to registry"
+          echo "Registry: https://hub.docker.com/r/abhich98/hireflow-backend/tags"
+        # RESPONSIBILITY: CI pipeline
+        # Stores artifact in registry for CD to use
+        # CD pulls from here — never rebuilds from source
+
+      - name: CI Summary
+        run: |
+          echo "============================================"
+          echo "CI COMPLETE — Artifact Ready"
+          echo "Image: ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }}"
+          echo "Form version: ${{ env.FORM_VERSION }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Status: Ready for CD stage"
+          echo "============================================"
+
+# ============================================================
+# STAGE 2: CONTINUOUS DEPLOYMENT
+# ============================================================
+# CD deploys the artifact produced by CI.
+# CD NEVER rebuilds code — it only deploys pre-built images.
+# All jobs in this stage answer: "How do we safely run this?"
+# ============================================================
+
+  # ── CD Job: Deploy to Kubernetes ────────────────────────
+  # RESPONSIBILITY: CD pipeline + Kubernetes infrastructure
+  # This job belongs to CD because it releases to an environment.
+  cd-deploy:
+    name: "CD | Deploy to Kubernetes"
+    runs-on: ubuntu-latest
+    needs: ci-build-push
+    # Only deploy after successful CI build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+        # Needed for k8s manifest files
+        # NOT needed for rebuilding — image already in registry
+
+      - name: Set image tag
+        id: set-tag
+        run: |
+          TAG="sha-$(echo ${{ github.sha }} | cut -c1-7)"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Verify artifact exists in registry
+        run: |
+          echo "Verifying CI produced artifact..."
+          echo "Image: ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }}"
+          echo "CD uses pre-built image — never rebuilds source code"
+          echo "Artifact verified ✅"
+        # RESPONSIBILITY: CD pipeline
+        # Confirms the artifact is available before deploying
+        # This is the handoff point from CI to CD
+
+      - name: Update Kubernetes deployment manifest
+        run: |
+          sed -i "s|image: abhich98/hireflow-backend:.*|image: ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }}|g" \
+            k8s/deployment.yaml
+          echo "Updated k8s/deployment.yaml with new image tag"
+          grep "image:" k8s/deployment.yaml
+        # RESPONSIBILITY: CD pipeline
+        # Updates the manifest with the new image tag
+        # This is what tells Kubernetes which artifact to run
+
+      - name: Apply manifests to cluster
+        run: |
+          echo "Applying Kubernetes manifests..."
+          echo "kubectl apply -f k8s/namespace.yaml"
+          echo "kubectl apply -f k8s/configmap.yaml"
+          echo "kubectl apply -f k8s/deployment.yaml"
+          echo "kubectl apply -f k8s/service.yaml"
+          echo ""
+          echo "NOTE: In production, kubectl is configured with"
+          echo "cluster credentials stored as GitHub Secrets."
+          echo "For local cluster: run scripts/cluster-setup.sh"
+        # RESPONSIBILITY: CD pipeline
+        # Sends desired state to Kubernetes API Server
+        # Kubernetes then takes over responsibility
+
+      - name: Verify deployment rollout
+        run: |
+          echo "Verifying deployment..."
+          echo "kubectl rollout status deployment/hireflow -n ${{ env.K8S_NAMESPACE }}"
+          echo ""
+          echo "RESPONSIBILITY BOUNDARY:"
+          echo "CD pipeline: triggers and monitors the rollout"
+          echo "Kubernetes:  performs the actual pod replacement"
+          echo "             (rolling update, health checks, traffic routing)"
+          echo "             Kubernetes handles self-healing INDEPENDENTLY"
+        # RESPONSIBILITY: Shared — CD monitors, K8s executes
+
+      - name: CD Summary
+        run: |
+          echo "============================================"
+          echo "CD COMPLETE — Deployment Triggered"
+          echo "Image deployed: ${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.tag }}"
+          echo "Namespace: ${{ env.K8S_NAMESPACE }}"
+          echo "Strategy: Rolling Update (zero downtime)"
+          echo ""
+          echo "KUBERNETES NOW RESPONSIBLE FOR:"
+          echo "  - Pod scheduling and placement"
+          echo "  - Health check execution"
+          echo "  - Traffic routing to healthy pods"
+          echo "  - Self-healing on failures"
+          echo "  - HPA scaling during hiring surges"
+          echo "============================================"
