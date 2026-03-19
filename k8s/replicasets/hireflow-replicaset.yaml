@@ -1,0 +1,109 @@
+# ============================================================
+# HireFlow — ReplicaSet Definition
+# Team 02 | Sprint #3 | Assignment 4.20
+# ============================================================
+# A ReplicaSet ensures that a specified number of pod replicas
+# are running at any given time.
+#
+# WHY REPLICASET OVER STANDALONE POD?
+#
+# Standalone Pod:
+#   - Single instance only
+#   - If pod crashes → stays dead (no self-healing)
+#   - Cannot scale
+#   - Not suitable for production
+#
+# ReplicaSet:
+#   - Maintains N replicas at all times
+#   - If pod crashes → new one created automatically
+#   - Can scale up/down by changing replicas field
+#   - Self-healing mechanism for production workloads
+#
+# NOTE: In real projects, use Deployments (not ReplicaSets
+# directly). Deployments manage ReplicaSets and add rolling
+# update capability. This is for learning purposes.
+# ============================================================
+
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: hireflow-rs
+  namespace: recruitment
+  labels:
+    app: hireflow
+    type: replicaset
+    assignment: "4.20"
+    team: team-02
+spec:
+
+  # ── Desired State ────────────────────────────────────────
+  # This is the core of Kubernetes declarative model.
+  # "I want 3 pods running at all times."
+  # Kubernetes continuously ensures current state = desired state.
+  # Change this number → K8s adds or removes pods automatically.
+  replicas: 3
+
+  # ── Selector ─────────────────────────────────────────────
+  # The ReplicaSet uses this selector to find and count pods.
+  # It manages ALL pods with label: app=hireflow-rs
+  # If a pod with this label crashes → RS creates a new one.
+  # If extra pods appear with this label → RS removes them.
+  selector:
+    matchLabels:
+      app: hireflow-rs
+
+  # ── Pod Template ─────────────────────────────────────────
+  # This is the blueprint for each pod the RS creates.
+  # RS uses this template to create new pods when needed.
+  template:
+    metadata:
+      # Pods created by this RS get these labels
+      # MUST match the selector above
+      labels:
+        app: hireflow-rs
+        version: v2.4.1
+        team: team-02
+    spec:
+      containers:
+      - name: hireflow-container
+        image: abhich98/hireflow-backend:v2.4.1
+
+        ports:
+        - containerPort: 3000
+          name: http
+
+        env:
+        - name: FORM_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: hireflow-config
+              key: FORM_VERSION
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+
+        # Health probes
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "250m"
