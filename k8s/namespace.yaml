@@ -1,0 +1,18 @@
+# ============================================================
+# HireFlow — Kubernetes Namespace
+# Team 02 | Sprint #3 | Assignment 4.17
+# ============================================================
+# Namespaces provide logical isolation within a cluster.
+# All HireFlow resources live in the 'recruitment' namespace.
+# This prevents conflicts with other applications on the
+# same cluster and enables resource quota enforcement.
+# ============================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: recruitment
+  labels:
+    team: team-02
+    project: hireflow
+    sprint: sprint-3

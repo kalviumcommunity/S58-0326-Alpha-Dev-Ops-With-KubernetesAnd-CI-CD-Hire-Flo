@@ -1,0 +1,171 @@
+# ============================================================
+# HireFlow Kubernetes Deployment Manifest
+# Team 02 | Sprint #3 | Assignment 4.4
+# ============================================================
+# This manifest demonstrates the lifecycle concepts:
+# - ReplicaSet via replicas field
+# - Rolling update strategy
+# - Health probes (liveness + readiness)
+# - Resource requests and limits
+# - Environment config via ConfigMap
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hireflow
+  namespace: recruitment
+  labels:
+    app: hireflow
+    team: team-02
+    sprint: sprint-3
+spec:
+
+  # ── ReplicaSet Configuration ────────────────────────────
+  # 3 replicas ensures availability during rolling updates
+  # HPA will scale this between 2 and 10 during surges
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: hireflow
+
+  # ── Rolling Update Strategy ─────────────────────────────
+  # maxUnavailable: 1 → at most 1 pod down during update
+  # maxSurge: 1       → at most 1 extra pod during update
+  # This ensures zero downtime during form version updates
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app: hireflow
+    spec:
+      containers:
+      - name: hireflow
+        image: abhich98/hireflow-backend:v2.4.1
+
+        ports:
+        - containerPort: 3000
+
+        # ── Environment Variables ──────────────────────────
+        # Form version injected from ConfigMap
+        # This is what enables form version traceability
+        env:
+        - name: FORM_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: hireflow-config
+              key: FORM_VERSION
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+
+        # ── Liveness Probe ─────────────────────────────────
+        # "Is the app alive?"
+        # Fails → container RESTARTED
+        # Detects: deadlocks, hung Node.js event loop
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # ── Readiness Probe ────────────────────────────────
+        # "Can this pod receive traffic?"
+        # Fails → pod REMOVED from load balancer
+        # Prevents: traffic to pods still starting up
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # ── Resource Requests and Limits ───────────────────
+        # Requests: guaranteed minimum (affects scheduling)
+        # Limits: maximum allowed (affects runtime behavior)
+        # CPU exceeded  → throttled (slowed)
+        # Memory exceeded → OOMKilled (terminated)
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+
+---
+# ============================================================
+# ConfigMap — Form Version Configuration
+# ============================================================
+# Externalizes form version from the image
+# Update this to change active form version
+# without rebuilding the Docker image
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hireflow-config
+  namespace: recruitment
+data:
+  FORM_VERSION: "v2.4.1"
+  NODE_ENV: "production"
+
+---
+# ============================================================
+# Service — Exposes HireFlow pods internally
+# ============================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: hireflow-service
+  namespace: recruitment
+spec:
+  selector:
+    app: hireflow
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+  type: ClusterIP
+
+---
+# ============================================================
+# HorizontalPodAutoscaler — Surge Scaling
+# ============================================================
+# Scales pods from 2 to 10 based on CPU usage
+# Solves: campus recruitment season traffic surges
+# ============================================================
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hireflow-hpa
+  namespace: recruitment
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hireflow
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60

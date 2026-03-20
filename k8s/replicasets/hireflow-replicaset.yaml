@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: hireflow-rs
+  namespace: recruitment
+  labels:
+    app: hireflow-learning
+    assignment: "4.20"
+    team: team-02
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: hireflow-learning
+
+  template:
+    metadata:
+      labels:
+        app: hireflow-learning
+        version: v2.4.1
+        team: team-02
+    spec:
+      containers:
+      - name: hireflow-container
+        image: abhich98/hireflow-backend:v2.4.1
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: FORM_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: hireflow-config
+              key: FORM_VERSION
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "250m"
