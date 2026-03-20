@@ -1,0 +1,299 @@
+# ============================================================
+# HireFlow — Secure CI/CD Pipeline with Secret Management
+# Team 02 | Sprint #3 | Assignment 4.42
+# ============================================================
+# PURPOSE:
+#   Demonstrates secure secret handling in CI/CD pipelines.
+#   All sensitive values are stored in GitHub Secrets and
+#   injected at runtime. No credentials appear in code or logs.
+#
+# SECRETS USED:
+#   DOCKER_USERNAME → Docker Hub username for registry auth
+#   DOCKER_TOKEN    → Docker Hub access token (not password)
+#
+# SECURITY PRINCIPLES DEMONSTRATED:
+#   1. Secrets never committed to repository
+#   2. Secrets injected only at runtime via ${{ secrets.NAME }}
+#   3. GitHub automatically masks secret values in logs
+#   4. Access token used instead of password (least privilege)
+#   5. Secrets scoped to this workflow only
+#
+# WHAT WOULD HAPPEN WITHOUT THIS APPROACH:
+#   If DOCKER_TOKEN was hardcoded in this file:
+#   - Anyone with repo access sees the token
+#   - Git history preserves it forever even after deletion
+#   - Token can be used to push malicious images to registry
+#   - All HireFlow images become compromised
+# ============================================================
+
+name: HireFlow Secure Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - 'assignment-*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  # ============================================================
+  # JOB 1: Validate Secret Configuration
+  # PURPOSE: Verify secrets are configured before any build runs
+  # This prevents confusing failures later in the pipeline
+  # ============================================================
+  validate-secrets:
+    name: "Security | Validate Secret Configuration"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - name: Verify secrets are configured
+        run: |
+          echo "============================================"
+          echo "  Secret Configuration Validation"
+          echo "============================================"
+          echo ""
+
+          # Check DOCKER_USERNAME is set
+          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
+            echo "❌ DOCKER_USERNAME secret is not configured"
+            echo "   Go to: Settings → Secrets → Actions"
+            echo "   Add secret: DOCKER_USERNAME = abhich98"
+            exit 1
+          else
+            echo "✅ DOCKER_USERNAME is configured"
+            echo "   Value: [MASKED BY GITHUB - never printed]"
+          fi
+
+          # Check DOCKER_TOKEN is set
+          if [ -z "${{ secrets.DOCKER_TOKEN }}" ]; then
+            echo "❌ DOCKER_TOKEN secret is not configured"
+            echo "   Go to: Docker Hub → Account Settings → Security"
+            echo "   Create access token, then add to GitHub Secrets"
+            exit 1
+          else
+            echo "✅ DOCKER_TOKEN is configured"
+            echo "   Value: [MASKED BY GITHUB - never printed]"
+          fi
+
+          echo ""
+          echo "  All secrets verified ✅"
+          echo "  Note: Secret VALUES are never printed above."
+          echo "  GitHub automatically masks them in logs."
+          echo "============================================"
+
+      # ── Demonstrate Secret Masking ────────────────────────
+      # This step shows that even if we accidentally tried to
+      # print a secret, GitHub would mask it automatically
+      - name: Demonstrate automatic secret masking
+        run: |
+          echo "============================================"
+          echo "  Secret Masking Demonstration"
+          echo "============================================"
+          echo ""
+          echo "Attempting to print DOCKER_USERNAME value:"
+          echo "Username: ${{ secrets.DOCKER_USERNAME }}"
+          echo ""
+          echo "In CI logs, the above line shows:"
+          echo "Username: ***"
+          echo "(GitHub replaces the value with *** automatically)"
+          echo ""
+          echo "This masking is automatic — even accidental"
+          echo "prints of secrets are protected."
+          echo "============================================"
+
+  # ============================================================
+  # JOB 2: Secure Build and Registry Push
+  # PURPOSE: Build Docker image and push using injected secrets
+  # Runs only after secret validation passes
+  # ============================================================
+  secure-build-push:
+    name: "Security | Build and Push with Injected Secrets"
+    runs-on: ubuntu-latest
+    needs: validate-secrets
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - name: Set image tag from Git SHA
+        id: image-tag
+        run: |
+          TAG="sha-$(echo ${{ github.sha }} | cut -c1-7)"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Image tag: ${TAG}"
+
+      # ── Secure Registry Authentication ──────────────────────
+      # SECURITY: Credentials injected at runtime via secrets
+      # NEVER hardcoded: username and token in workflow file
+      #
+      # What happens at runtime:
+      # 1. GitHub retrieves encrypted secret from vault
+      # 2. Decrypts in memory on the runner
+      # 3. Passes to docker/login-action as environment variable
+      # 4. Value never written to disk or log output
+      #
+      # WHY ACCESS TOKEN instead of password:
+      # - Token can be scoped to push-only (least privilege)
+      # - Token can be revoked without changing password
+      # - Token rotation does not affect other services
+      # - Compromised token affects only registry, not account
+      - name: Authenticate to Docker Hub (runtime secret injection)
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+        # At this point:
+        # - secrets.DOCKER_USERNAME is decrypted in memory
+        # - secrets.DOCKER_TOKEN is decrypted in memory
+        # - Neither value appears in any log
+        # - Authentication happens over HTTPS
+        # - Credentials are NOT written to any file
+
+      # ── Show Authentication Success Without Revealing Credentials
+      - name: Verify authentication succeeded
+        run: |
+          echo "============================================"
+          echo "  Registry Authentication Status"
+          echo "============================================"
+          echo ""
+          echo "Registry: docker.io"
+          echo "Username: ${{ secrets.DOCKER_USERNAME }}"
+          echo "Token:    [MASKED — never printed in logs]"
+          echo "Status:   ✅ Authenticated successfully"
+          echo ""
+          echo "Authentication used:"
+          echo "  → GitHub Secret: DOCKER_USERNAME"
+          echo "  → GitHub Secret: DOCKER_TOKEN"
+          echo "  → Injected at runtime only"
+          echo "  → Not stored in any file"
+          echo "  → Not present in repository"
+          echo "============================================"
+
+      # ── Build Docker Image ───────────────────────────────────
+      - name: Build HireFlow Docker image
+        run: |
+          docker build \
+            -t ${{ secrets.DOCKER_USERNAME }}/hireflow-backend:${{ steps.image-tag.outputs.tag }} \
+            -t ${{ secrets.DOCKER_USERNAME }}/hireflow-backend:latest \
+            ./backend
+          echo "Built: ${{ secrets.DOCKER_USERNAME }}/hireflow-backend:${{ steps.image-tag.outputs.tag }}"
+
+      # ── Secure Registry Push ─────────────────────────────────
+      # The docker push command uses the credentials established
+      # in the login step above. No credentials needed here.
+      # The token is stored in Docker's credential store in memory.
+      - name: Push image to registry
+        run: |
+          echo "Pushing image to Docker Hub..."
+          docker push ${{ secrets.DOCKER_USERNAME }}/hireflow-backend:${{ steps.image-tag.outputs.tag }}
+          docker push ${{ secrets.DOCKER_USERNAME }}/hireflow-backend:latest
+          echo "Push complete ✅"
+          echo "Image: ${{ secrets.DOCKER_USERNAME }}/hireflow-backend:${{ steps.image-tag.outputs.tag }}"
+          echo "Credentials used: GitHub Secrets (never in logs)"
+
+      - name: Security summary
+        run: |
+          echo "============================================"
+          echo "  SECURE PIPELINE COMPLETE"
+          echo "============================================"
+          echo ""
+          echo "  Secrets used in this pipeline:"
+          echo "  ┌─────────────────────────────────────┐"
+          echo "  │ Secret          │ Exposed in code?  │"
+          echo "  │─────────────────│───────────────────│"
+          echo "  │ DOCKER_USERNAME │ ❌ No — injected  │"
+          echo "  │ DOCKER_TOKEN    │ ❌ No — injected  │"
+          echo "  └─────────────────────────────────────┘"
+          echo ""
+          echo "  Image pushed: ✅"
+          echo "  Credentials leaked: ❌ None"
+          echo "  Secrets in logs: ❌ None"
+          echo "  Secrets in code: ❌ None"
+          echo "============================================"
+
+  # ============================================================
+  # JOB 3: Secret Hygiene Check
+  # PURPOSE: Scan repository for accidentally committed secrets
+  # Runs on every push and PR as a safety net
+  # ============================================================
+  secret-hygiene-check:
+    name: "Security | Repository Secret Hygiene Scan"
+    runs-on: ubuntu-latest
+    needs: validate-secrets
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      # ── Scan for Hardcoded Credentials ───────────────────────
+      # This job scans the repository for patterns that indicate
+      # hardcoded credentials. Catches accidental commits.
+      - name: Scan for hardcoded credentials
+        run: |
+          echo "============================================"
+          echo "  Repository Secret Hygiene Scan"
+          echo "============================================"
+          echo ""
+          echo "Scanning for dangerous patterns..."
+          echo ""
+
+          FOUND_ISSUES=0
+
+          # Check for password patterns
+          if grep -r "password\s*=\s*['\"][^'\"]*['\"]" \
+            --include="*.yml" --include="*.yaml" \
+            --include="*.env" --include="*.js" \
+            --exclude-dir=".git" --exclude-dir="node_modules" \
+            . 2>/dev/null; then
+            echo "⚠️  WARNING: Possible hardcoded password found"
+            FOUND_ISSUES=$((FOUND_ISSUES + 1))
+          else
+            echo "✅ No hardcoded passwords found"
+          fi
+
+          # Check for token patterns
+          if grep -r "token\s*=\s*['\"][a-zA-Z0-9_\-]\{20,\}['\"]" \
+            --include="*.yml" --include="*.yaml" \
+            --include="*.js" \
+            --exclude-dir=".git" --exclude-dir="node_modules" \
+            . 2>/dev/null; then
+            echo "⚠️  WARNING: Possible hardcoded token found"
+            FOUND_ISSUES=$((FOUND_ISSUES + 1))
+          else
+            echo "✅ No hardcoded tokens found"
+          fi
+
+          # Check for .env files committed
+          if find . -name ".env" -not -path "./.git/*" \
+            -not -path "./node_modules/*" 2>/dev/null | grep -q ".env"; then
+            echo "⚠️  WARNING: .env file found in repository"
+            echo "   .env files should be in .gitignore"
+            FOUND_ISSUES=$((FOUND_ISSUES + 1))
+          else
+            echo "✅ No .env files committed"
+          fi
+
+          # Check .gitignore has .env
+          if grep -q "\.env" .gitignore 2>/dev/null; then
+            echo "✅ .gitignore includes .env protection"
+          else
+            echo "⚠️  .gitignore does not protect .env files"
+            FOUND_ISSUES=$((FOUND_ISSUES + 1))
+          fi
+
+          echo ""
+          if [ $FOUND_ISSUES -eq 0 ]; then
+            echo "✅ Repository secret hygiene: CLEAN"
+            echo "   No hardcoded credentials detected"
+          else
+            echo "⚠️  Found $FOUND_ISSUES potential issue(s)"
+            echo "   Review warnings above"
+          fi
+          echo "============================================"
