@@ -1,0 +1,281 @@
+# ============================================================
+# HireFlow — Continuous Integration Workflow
+# Team 02 | Sprint #3 | Assignment 4.37
+# ============================================================
+# PURPOSE:
+#   Automatically validate every code change pushed to this
+#   repository. Ensures no broken code can be merged to main.
+#
+# TRIGGER CONDITIONS:
+#   push to main     → full CI runs on merged code
+#   pull_request     → full CI runs on proposed changes
+#
+# WHY THESE TRIGGERS?
+#   push to main:
+#     Every merge must be validated — even if PR passed,
+#     the merge itself could introduce issues.
+#
+#   pull_request:
+#     Validates code BEFORE it merges — catches problems
+#     early when they are cheapest to fix.
+#     PR cannot merge without CI passing (branch protection).
+#
+# CI GUARANTEE:
+#   If this workflow passes → code is safe to merge
+#   If this workflow fails  → code is blocked from merging
+# ============================================================
+
+name: HireFlow CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'assignment-*'
+  pull_request:
+    branches:
+      - main
+
+# ── Concurrency Control ───────────────────────────────────
+# If two pushes happen quickly, cancel the older run.
+# Prevents wasted CI resources on outdated commits.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ============================================================
+  # JOB 1: ci-validate
+  # PURPOSE: Validate code quality before building any artifact
+  # RUNS ON: Every push and every pull_request
+  # ============================================================
+  ci-validate:
+    name: "CI | Validate Code Quality"
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ── Step 1: Code Checkout ───────────────────────────
+      # ACTION: Clone the repository at the exact commit SHA
+      # WHY: Ensures CI always tests the exact code that was pushed
+      # WITHOUT THIS: CI might test stale or wrong code version
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      # ── Step 2: Runtime Setup ───────────────────────────
+      # ACTION: Install Node.js 18 on the CI runner
+      # WHY: Our backend requires Node.js 18 to run
+      # WITHOUT THIS: npm commands fail — runtime not available
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      # ── Step 3: Display CI Environment Info ─────────────
+      # ACTION: Print environment details for debugging
+      # WHY: Helps identify environment issues in failed runs
+      - name: Display CI environment
+        run: |
+          echo "============================================"
+          echo "  HireFlow CI Pipeline"
+          echo "  Trigger: ${{ github.event_name }}"
+          echo "  Branch:  ${{ github.ref_name }}"
+          echo "  Commit:  ${{ github.sha }}"
+          echo "  Runner:  ${{ runner.os }}"
+          echo "  Node:    $(node --version)"
+          echo "  npm:     $(npm --version)"
+          echo "============================================"
+
+      # ── Step 4: Install Dependencies ────────────────────
+      # ACTION: Run npm install in the backend directory
+      # WHY: Tests and build steps require packages to be installed
+      # GATE: If packages fail to install → pipeline stops here
+      # WITHOUT THIS: All subsequent steps fail with missing module errors
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          echo "Installing dependencies..."
+          npm install
+          echo "Dependencies installed successfully"
+          echo "Package count: $(ls node_modules | wc -l) packages"
+
+      # ── Step 5: Validate package.json ───────────────────
+      # ACTION: Verify package.json is valid JSON
+      # WHY: Malformed package.json causes subtle runtime failures
+      # GATE: Invalid JSON → pipeline stops
+      - name: Validate package.json structure
+        run: |
+          cd backend
+          node -e "
+            const pkg = require('./package.json');
+            console.log('Package name:', pkg.name);
+            console.log('Package version:', pkg.version);
+            console.log('Main entry:', pkg.main);
+            console.log('package.json is valid JSON ✅');
+          "
+
+      # ── Step 6: Run Tests ────────────────────────────────
+      # ACTION: Execute all tests defined in package.json
+      # WHY: Catches broken business logic before it merges
+      # GATE: ANY test failure → pipeline stops → no artifact built
+      # This is the most critical quality gate in CI
+      - name: Run automated tests
+        run: |
+          cd backend
+          echo "Running HireFlow test suite..."
+          npm test
+          echo "All tests passed ✅"
+
+      # ── Step 7: Validate Server Syntax ──────────────────
+      # ACTION: Check server.js for syntax errors using Node
+      # WHY: Catches syntax errors that would crash on startup
+      # GATE: Syntax error → pipeline stops
+      - name: Validate server.js syntax
+        run: |
+          cd backend
+          echo "Checking server.js for syntax errors..."
+          node --check server.js
+          echo "server.js syntax is valid ✅"
+
+      # ── Step 8: Verify Application Starts ───────────────
+      # ACTION: Start the server and verify it responds
+      # WHY: Confirms app runs correctly, not just parses
+      # GATE: Server fails to start → pipeline stops
+      - name: Verify application starts correctly
+        run: |
+          cd backend
+          echo "Starting HireFlow server for smoke test..."
+          node server.js &
+          SERVER_PID=$!
+          sleep 3
+
+          echo "Testing /health endpoint..."
+          RESPONSE=$(curl -s http://localhost:3000/health)
+          echo "Response: $RESPONSE"
+
+          if echo "$RESPONSE" | grep -q "healthy"; then
+            echo "Health check passed ✅"
+          else
+            echo "Health check failed ❌"
+            kill $SERVER_PID
+            exit 1
+          fi
+
+          echo "Testing /api/form-version endpoint..."
+          FORM_RESPONSE=$(curl -s http://localhost:3000/api/form-version)
+          echo "Response: $FORM_RESPONSE"
+
+          if echo "$FORM_RESPONSE" | grep -q "formVersion"; then
+            echo "Form version endpoint passed ✅"
+          else
+            echo "Form version endpoint failed ❌"
+            kill $SERVER_PID
+            exit 1
+          fi
+
+          kill $SERVER_PID
+          echo "Application smoke test completed successfully ✅"
+
+      # ── Step 9: CI Summary ───────────────────────────────
+      # ACTION: Print summary of all CI checks
+      # WHY: Provides clear confirmation in CI logs
+      - name: CI validation summary
+        run: |
+          echo "============================================"
+          echo "  CI VALIDATION COMPLETE"
+          echo "  Status: All checks passed ✅"
+          echo ""
+          echo "  ✅ Code checkout"
+          echo "  ✅ Dependencies installed"
+          echo "  ✅ package.json valid"
+          echo "  ✅ Tests passed"
+          echo "  ✅ Syntax valid"
+          echo "  ✅ Application starts"
+          echo "  ✅ Health endpoint responds"
+          echo "  ✅ Form version endpoint responds"
+          echo ""
+          echo "  Commit: ${{ github.sha }}"
+          echo "  Branch: ${{ github.ref_name }}"
+          echo "  This code is safe to merge ✅"
+          echo "============================================"
+
+  # ============================================================
+  # JOB 2: ci-docker-check
+  # PURPOSE: Validate Dockerfile is correct and builds successfully
+  # RUNS ON: Push to main only (not PRs — saves CI minutes)
+  # DEPENDS ON: ci-validate must pass first
+  # ============================================================
+  ci-docker-check:
+    name: "CI | Validate Dockerfile"
+    runs-on: ubuntu-latest
+    needs: ci-validate
+    if: github.event_name == 'push'
+
+    steps:
+
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      # ── Docker Build Validation ──────────────────────────
+      # ACTION: Build Docker image to validate Dockerfile
+      # WHY: Catches Dockerfile errors before CD stage
+      # GATE: Build fails → pipeline stops → no push to registry
+      - name: Validate Dockerfile builds successfully
+        run: |
+          echo "Building HireFlow Docker image..."
+          docker build -t hireflow-ci-check:${{ github.sha }} ./backend
+          echo "Docker build succeeded ✅"
+
+      # ── Image Inspection ────────────────────────────────
+      - name: Inspect built image
+        run: |
+          echo "Image details:"
+          docker images hireflow-ci-check:${{ github.sha }}
+          echo ""
+          echo "Image layers:"
+          docker history hireflow-ci-check:${{ github.sha }} --no-trunc=false
+          echo "Image inspection complete ✅"
+
+      # ── Container Smoke Test ────────────────────────────
+      - name: Run container and verify health endpoint
+        run: |
+          echo "Starting container from built image..."
+          docker run -d \
+            --name hireflow-ci-test \
+            -p 3000:3000 \
+            -e FORM_VERSION=v2.4.1 \
+            -e NODE_ENV=production \
+            hireflow-ci-check:${{ github.sha }}
+
+          echo "Waiting for container to start..."
+          sleep 5
+
+          echo "Testing containerized health endpoint..."
+          RESPONSE=$(curl -s http://localhost:3000/health)
+          echo "Response: $RESPONSE"
+
+          if echo "$RESPONSE" | grep -q "healthy"; then
+            echo "Container health check passed ✅"
+          else
+            echo "Container health check failed ❌"
+            docker logs hireflow-ci-test
+            docker stop hireflow-ci-test
+            exit 1
+          fi
+
+          docker stop hireflow-ci-test
+          docker rm hireflow-ci-test
+          echo "Container smoke test passed ✅"
+
+      - name: Docker validation summary
+        run: |
+          echo "============================================"
+          echo "  DOCKER VALIDATION COMPLETE"
+          echo "  ✅ Dockerfile builds successfully"
+          echo "  ✅ Container starts correctly"
+          echo "  ✅ Health endpoint responds in container"
+          echo "  Image: hireflow-ci-check:${{ github.sha }}"
+          echo "============================================"
